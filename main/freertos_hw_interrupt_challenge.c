@@ -91,9 +91,9 @@ static bool adc_sampling_timer_cb(gptimer_handle_t timer, const gptimer_alarm_ev
     QueueHandle_t queue_cb = cb_data->queue_num == 1 ? queue1 : queue2;
 
     if (xQueueSendFromISR(queue_cb, &cb_data->num, NULL) != pdPASS) {
-        cb_data->queue_num ^= 0x03;
-        // notify compute_avg task - queue 1 is index 0, queue2 is index 1
-        xTaskNotifyIndexedFromISR(x_compute_avg_task, cb_data->queue_num - 1, 0, eNoAction, NULL);
+        // notify compute_avg task - index 0
+        xTaskNotifyIndexedFromISR(x_compute_avg_task, 0, (uint32_t) cb_data->queue_num, eSetValueWithOverwrite, NULL);
+        cb_data->queue_num ^= 0x03;    // toggle between 1 and 2
     }
     else
         cb_data->num++;
@@ -106,35 +106,23 @@ static void compute_avg_task(void *arg)
 {
 
     static uint32_t num = 0;
+    static uint32_t queue_num = 0;
     int i = 0;
     while(1) {
         xTaskNotifyWaitIndexed(0,               // index 0
-                               0x00,            // no need to clear notification value (not being used)
-                               0x00,            // again, nothing to clear on exit (not used)
-                               NULL,            // notification value is not needed, so set to NULL
+                               0x00,            // no need to clear notification value
+                               0x00,            // again, nothing to clear on exit
+                               &queue_num,      // notification value that holds queue num
                                portMAX_DELAY    // max time to wait in blocked state for notifcation
                               );
         avg = 0.0; i = 0;
-        while (xQueueReceive(queue1, &num, 0) == pdPASS) {
+        QueueHandle_t queue_handle = queue_num == 1 ? queue1 : queue2;
+        while (xQueueReceive(queue_handle, &num, 0) == pdPASS) {
             i++;
             avg += num;
         }
         avg /= i;
-        ESP_LOGI(TAG, "avg of queue1 is %f", avg);
-
-        xTaskNotifyWaitIndexed(1,               // index 1
-                               0x00,            // no need to clear notification value (not being used)
-                               0x00,            // again, nothing to clear on exit (not used)
-                               NULL,            // notification value is not needed, so set to NULL
-                               portMAX_DELAY    // max time to wait in blocked state for notifcation
-                              );
-        avg = 0.0; i = 0;
-        while (xQueueReceive(queue2, &num, 0) == pdPASS) {
-            i++;
-            avg += num;
-        }
-        avg /= i;
-        ESP_LOGI(TAG, "avg of queue2 is %f", avg);
+        ESP_LOGI(TAG, "avg of queue%lu is %f", queue_num, avg);
     }
 
 }
