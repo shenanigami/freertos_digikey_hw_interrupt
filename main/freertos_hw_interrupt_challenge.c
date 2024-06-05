@@ -28,16 +28,12 @@
 
 static const char *TAG = "[HW_INTERRUPT] ";
 
-static TaskHandle_t x_compute_avg_task = NULL, x_echo_avg_task = NULL;
+static TaskHandle_t x_compute_avg_task = NULL,
+                    x_echo_avg_task = NULL;
 static QueueHandle_t queue1, queue2;
 static adc_continuous_handle_t adc_handle = NULL;
 #define TASK_STACK_SIZE 2*1024
 #define QUEUE_SIZE 10
-
-typedef struct {
-    uint8_t queue_num;
-    uint32_t num;
-} timer_cb_data_t;
 
 portMUX_TYPE adc_mutex = portMUX_INITIALIZER_UNLOCKED;
 
@@ -82,21 +78,19 @@ static void continuous_adc_init(adc_continuous_handle_t *adc_handle)
 // return bool value is - Whether a high priority task has been waken up by this function
 static bool adc_sampling_timer_cb(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
 {
-    timer_cb_data_t *cb_data = (timer_cb_data_t*) user_ctx;
+    uint8_t *queue_num = (uint8_t *) user_ctx;
 
     uint8_t result[ADC_READ_LEN] = { 0 };
     uint32_t out_length = 0;
+    QueueHandle_t queue_cb = *queue_num == 1 ? queue1 : queue2;
+
     adc_continuous_read(adc_handle, result, ADC_READ_LEN, &out_length, 0);
 
-    QueueHandle_t queue_cb = cb_data->queue_num == 1 ? queue1 : queue2;
-
-    if (xQueueSendFromISR(queue_cb, &cb_data->num, NULL) != pdPASS) {
+    if (xQueueSendFromISR(queue_cb, (void *) result, NULL) != pdPASS) {
         // notify compute_avg task - index 0
-        xTaskNotifyIndexedFromISR(x_compute_avg_task, 0, (uint32_t) cb_data->queue_num, eSetValueWithOverwrite, NULL);
-        cb_data->queue_num ^= 0x03;    // toggle between 1 and 2
+        xTaskNotifyIndexedFromISR(x_compute_avg_task, 0, (uint32_t) (*queue_num), eSetValueWithOverwrite, NULL);
+        *queue_num ^= 0x03;    // toggle between 1 and 2
     }
-    else
-        cb_data->num++;
 
     return false;
 }
@@ -234,11 +228,11 @@ void app_main(void)
         .on_alarm = adc_sampling_timer_cb,  // register user callback
     };
 
-    timer_cb_data_t *cb_data = calloc(1, sizeof(timer_cb_data_t));
-    assert(cb_data);
-    cb_data->queue_num = 1;
+    uint8_t *queue_num = malloc(sizeof(uint8_t));
+    assert(queue_num);
+    *queue_num = 1;
 
-    ESP_ERROR_CHECK(gptimer_register_event_callbacks(adc_read_timer, &cbs, (void *) cb_data));
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(adc_read_timer, &cbs, (void *) queue_num));
     // Create queues
     queue1 = xQueueCreate(QUEUE_SIZE, sizeof(uint32_t));
     queue2 = xQueueCreate(QUEUE_SIZE, sizeof(uint32_t));
